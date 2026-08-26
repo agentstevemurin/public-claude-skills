@@ -84,6 +84,7 @@ def fetch_video_and_transcript(video_url: str, tmpdir: Path) -> tuple[dict, str]
         "outtmpl": str(tmpdir / "%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
+        "extractor_args": {"youtube": {"player_client": ["android"]}},
     }
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(video_url, download=True)
@@ -101,7 +102,7 @@ def fetch_video_and_transcript(video_url: str, tmpdir: Path) -> tuple[dict, str]
 
 def build_markdown(info: dict, transcript: str, download_date: str) -> str:
     title = info.get("title", "Untitled")
-    channel = info.get("uploader") or info.get("channel") or "Unknown channel"
+    channel = info.get("uploader") or info.get("channel") or info.get("uploader_id") or "Unknown channel"
     url = info.get("webpage_url", "")
     upload_date_raw = info.get("upload_date", "")
     if upload_date_raw and len(upload_date_raw) == 8:
@@ -151,7 +152,7 @@ def main() -> int:
                 info, transcript = fetch_video_and_transcript(video_url, Path(tmpdir))
 
             md = build_markdown(info, transcript, download_date)
-            channel_name = sanitize(info.get("uploader") or info.get("channel") or channel_url)
+            channel_name = sanitize(info.get("uploader") or info.get("channel") or info.get("uploader_id") or channel_url)
             title = sanitize(info.get("title", "untitled"))
             out_path = output_dir / f"{channel_name}_{title}.md"
             out_path.write_text(md, encoding="utf-8")
