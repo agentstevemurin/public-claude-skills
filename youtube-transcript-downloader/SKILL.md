@@ -17,6 +17,8 @@ pip install -U yt-dlp
 
 No YouTube Data API key or other credentials are required — `yt-dlp` reads public channel and caption data directly.
 
+The caption-fetch step requests YouTube's `android` player client, since the default `web` client currently gets blocked by YouTube's bot check ("The page needs to be reloaded") on most videos. If that check starts blocking `android` too, try another client (`ios`, `tv`, etc.) via yt-dlp's `--extractor-args "youtube:player_client=..."` and update `fetch_video_and_transcript`'s `extractor_args` accordingly.
+
 ## Channel list format
 
 Maintain a YAML file listing the channels to check, one per entry. Full channel URLs or `@handle` shorthand both work:
