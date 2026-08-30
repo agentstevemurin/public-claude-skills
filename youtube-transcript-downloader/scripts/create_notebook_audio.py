@@ -22,19 +22,26 @@ from pathlib import Path
 AUDIO_LENGTHS = {"short", "default", "long"}
 POLL_INTERVAL_SECONDS = 20
 DEFAULT_MAX_WAIT_SECONDS = 600
+NLM_COMMAND_TIMEOUT_SECONDS = 300
 
 
 def run_nlm(args: list[str], profile: str | None = None) -> dict:
     cmd = ["nlm", *args, "--json"]
     if profile:
         cmd += ["--profile", profile]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=NLM_COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"`{' '.join(cmd)}` timed out after {NLM_COMMAND_TIMEOUT_SECONDS}s") from e
     if result.returncode != 0:
         raise RuntimeError(f"`{' '.join(cmd)}` failed: {result.stderr.strip() or result.stdout.strip()}")
     try:
-        return json.loads(result.stdout)
+        data = json.loads(result.stdout)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"`{' '.join(cmd)}` returned non-JSON output: {result.stdout!r}") from e
+    if not isinstance(data, dict):
+        raise RuntimeError(f"`{' '.join(cmd)}` returned unexpected JSON shape: {data!r}")
+    return data
 
 
 def create_notebook(title: str, profile: str | None) -> str:
@@ -67,7 +74,7 @@ def poll_audio_status(notebook_id: str, artifact_id: str, max_wait: int, profile
             ["studio", "status", notebook_id, "--artifact-id", artifact_id],
             profile=profile,
         )
-        status = data.get("status", "unknown") if isinstance(data, dict) else "unknown"
+        status = data.get("status", "unknown")
         if status in ("completed", "failed"):
             return status
         time.sleep(POLL_INTERVAL_SECONDS)

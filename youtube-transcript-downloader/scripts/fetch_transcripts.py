@@ -17,6 +17,8 @@ from pathlib import Path
 import yaml
 from yt_dlp import YoutubeDL
 
+SUBTITLE_LANGS = ["en", "en-US", "en-orig"]
+
 
 def normalize_channel_url(entry: str) -> str:
     entry = entry.strip().strip('"').strip("'")
@@ -26,13 +28,15 @@ def normalize_channel_url(entry: str) -> str:
     return f"https://www.youtube.com/{handle}"
 
 
-def load_channels(channels_path: Path) -> list[str]:
+def load_channels(channels_path: Path) -> list:
     with open(channels_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     entries = data.get("channels", [])
+    if not isinstance(entries, list):
+        raise ValueError(f"'channels' must be a YAML list, got {type(entries).__name__}: {entries!r}")
     if not entries:
         raise ValueError(f"No channels found in {channels_path}")
-    return [normalize_channel_url(e) for e in entries]
+    return entries
 
 
 def get_most_recent_video_url(channel_url: str) -> str:
@@ -60,7 +64,6 @@ def sanitize(name: str, max_len: int = 80) -> str:
 def vtt_to_text(vtt_path: Path) -> str:
     lines = vtt_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     out = []
-    seen = set()
     for line in lines:
         line = line.strip()
         if not line or line == "WEBVTT":
@@ -68,10 +71,20 @@ def vtt_to_text(vtt_path: Path) -> str:
         if "-->" in line or re.match(r"^\d+$", line) or line.startswith(("Kind:", "Language:")):
             continue
         line = re.sub(r"<[^>]+>", "", line)
-        if line and line not in seen:
+        # Rolling auto-captions repeat the same line across consecutive cues;
+        # only collapse those adjacent repeats, not genuine repeated dialogue.
+        if line and (not out or out[-1] != line):
             out.append(line)
-            seen.add(line)
     return "\n".join(out)
+
+
+def select_vtt_file(tmpdir: Path, video_id: str, preferred_langs: list[str]) -> Path | None:
+    for lang in preferred_langs:
+        candidate = tmpdir / f"{video_id}.{lang}.vtt"
+        if candidate.exists():
+            return candidate
+    remaining = sorted(tmpdir.glob(f"{video_id}*.vtt"))
+    return remaining[0] if remaining else None
 
 
 def fetch_video_and_transcript(video_url: str, tmpdir: Path) -> tuple[dict, str]:
@@ -80,7 +93,7 @@ def fetch_video_and_transcript(video_url: str, tmpdir: Path) -> tuple[dict, str]
         "writesubtitles": True,
         "writeautomaticsub": True,
         "subtitlesformat": "vtt",
-        "subtitleslangs": ["en", "en-US", "en-orig"],
+        "subtitleslangs": SUBTITLE_LANGS,
         "outtmpl": str(tmpdir / "%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
@@ -89,11 +102,11 @@ def fetch_video_and_transcript(video_url: str, tmpdir: Path) -> tuple[dict, str]
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(video_url, download=True)
 
-    vtt_files = sorted(tmpdir.glob(f"{info['id']}*.vtt"))
-    if not vtt_files:
+    vtt_file = select_vtt_file(tmpdir, info["id"], SUBTITLE_LANGS)
+    if vtt_file is None:
         raise RuntimeError("no captions available")
 
-    transcript = vtt_to_text(vtt_files[0])
+    transcript = vtt_to_text(vtt_file)
     if not transcript.strip():
         raise RuntimeError("captions file was empty")
 
@@ -145,8 +158,10 @@ def main() -> int:
     ok_count = 0
     results = []
 
-    for channel_url in channel_urls:
+    for raw_entry in channel_urls:
+        channel_url = None
         try:
+            channel_url = normalize_channel_url(raw_entry)
             video_url = get_most_recent_video_url(channel_url)
             with tempfile.TemporaryDirectory() as tmpdir:
                 info, transcript = fetch_video_and_transcript(video_url, Path(tmpdir))
@@ -160,7 +175,9 @@ def main() -> int:
             results.append((channel_url, "ok", str(out_path)))
             ok_count += 1
         except Exception as e:
-            results.append((channel_url, "error", str(e)))
+            label = channel_url or raw_entry
+            status = "skipped: no captions" if "captions" in str(e) else "error"
+            results.append((label, status, str(e)))
 
     print(f"\nSaved transcripts to: {output_dir}\n")
     for channel_url, status, detail in results:
